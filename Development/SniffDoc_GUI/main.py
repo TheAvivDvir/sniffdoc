@@ -3,6 +3,8 @@
 # from snifflogic_basic.basic import *
 # import numpy as np
 # import matplotlib.pyplot as plt
+from pathlib import Path
+
 from nicegui import ui, app
 # import time
 # import serial
@@ -19,6 +21,10 @@ def index():
 
 def main():
     global sd
+    project_root = Path(__file__).resolve().parents[2]
+    sounds_dir = project_root / "Sounds"
+    app.add_static_files("/sounds", str(sounds_dir))
+
     sd = SniffDoc()
     sd.start_acquisition()
     app.on_shutdown(sd.close)

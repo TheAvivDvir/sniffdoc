@@ -14,7 +14,7 @@ from collections import deque
 from snifflogic_basic.basic import Basic
 
 class SniffDoc:
-    def __init__(self, port="COM4", buffer_size=1000, sample_rate_hz=100):
+    def __init__(self, port="COM3", buffer_size=1000, sample_rate_hz=100):
         self.basic = Basic(port)
         self.t0 = time.perf_counter()
 
@@ -23,6 +23,7 @@ class SniffDoc:
 
         self.csv_queue = queue.Queue()
         self.inhale_queue = queue.Queue()
+        self.event_queue = queue.Queue()
 
         self.sample_rate_hz = sample_rate_hz
         self.sample_period_s = 1.0 / sample_rate_hz
@@ -70,16 +71,21 @@ class SniffDoc:
             daemon=True
         )
         self.acq_thread.start()
+
+    def stop_acquisition(self):
+        self.running = False
+        self.acq_thread.join()
     
     def csv_writer_loop(self, path):
         file = open(path, "w", newline="") #Code debt - maybe slow down updating csv
         writer = csv.writer(file)
         writer.writerow(["time", "pressure", "notes"])
+        writer_t0 = self.clock()
 
         while self.recording_csv:
             try:
                 sample = self.csv_queue.get(timeout=0.5)
-                writer.writerow([sample[0], sample[1], ""])
+                writer.writerow([sample[0] - writer_t0, sample[1], ""])
             except queue.Empty:
                 pass
 
@@ -96,7 +102,8 @@ class SniffDoc:
 
     def stop_csv_recording(self):
         self.recording_csv = False
-    
+        self.csv_thread.join()
+
     def inhale_detect_loop(self):
         """
         This function is the loop running inside the inhale detection loop.
@@ -148,6 +155,11 @@ class SniffDoc:
                     if inhales_cnt < 3:
                         inhales_cnt += 1
                     print(f"Inhale detected! Total count: {inhales_cnt}")
+                    self.event_queue.put({
+                        "type": "inhale_detected",
+                        "count": inhales_cnt,
+                        "timestamp": t,
+                    })
                     vol_deque.append(curr_vol)
                     onset_time_prev = onset_time
                     if len(vol_deque) == 3:
@@ -158,17 +170,29 @@ class SniffDoc:
                         cond3 = abs(v3 - v1) <= overlap_th * max(v1, v3)
                         if cond1 and cond2 and cond3:
                             print("Experiment activated!")
-                            self.inhale_detect = False
+                            self.event_queue.put({
+                                "type": "experiment_activated",
+                                "count": inhales_cnt,
+                                "timestamp": t,
+                            })
+                            inhales_cnt = 0
+                            inhale_flag = False
+                            time_count = 0
+                            curr_vol = 0
+                            vol_deque.clear()
+                            onset_time_prev = self.clock()
+                            onset_time = onset_time_prev
                             continue
                 inhale_flag = False
                 time_count = 0
                 curr_vol = 0
-
     
     def inhale_detect_start(self):
         """
         This function starts the inhale detection thread.
         """
+        if self.inhale_detect:
+            return
         self.inhale_detect = True
         self.inhale_thread = threading.Thread(
             target=self.inhale_detect_loop,
@@ -181,6 +205,8 @@ class SniffDoc:
         This function deactivates the inhale detection thread.
         """
         self.inhale_detect = False
+        if hasattr(self, "inhale_thread"):
+            self.inhale_thread.join()
     
     def close(self):
         self.running = False
@@ -190,7 +216,7 @@ class SniffDoc:
         self.basic.close()
 
 # -------- HELPER FUNCTIONS --------
-    
+
     def clock(self):
         return time.perf_counter() - self.t0
 
